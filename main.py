@@ -1,10 +1,10 @@
 """
 main.py - DeskJots main window
-Minimal dark UI with muted amber accent.
+Tile-based note list with per-tile delete button.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 import deskjots_db as db
 from note_window import NoteWindow
 
@@ -13,11 +13,12 @@ APP_NAME = "DeskJots"
 # ── Palette ────────────────────────────────────────────────────────────────
 BG         = "#1a1a1a"
 BG_PANEL   = "#111111"
+BG_TILE    = "#222222"
+BG_TILE_HO = "#292929"
 FG         = "#d0d0d0"
-FG_DIM     = "#555555"
+FG_DIM     = "#9e9e9e"
+FG_MUTED   = "#888888"
 ACCENT     = "#f5c842"
-BTN_BG     = "#252525"
-SEL_BG     = "#2a2a2a"
 BORDER     = "#2e2e2e"
 
 
@@ -27,47 +28,15 @@ class App(tk.Tk):
         db.init_db()
 
         self.title(APP_NAME)
-        self.geometry("400x520")
+        self.geometry("400x540")
         self.minsize(320, 360)
         self.configure(bg=BG)
 
         self._open_notes: dict[int, NoteWindow] = {}
+        self._tiles: list[tk.Frame] = []
 
-        self._style()
         self._build_ui()
         self._refresh_list()
-
-    # ---------------------------------------------------------------- style
-
-    def _style(self):
-        s = ttk.Style(self)
-        s.theme_use("clam")
-
-        s.configure("Treeview",
-                    background=BG,
-                    fieldbackground=BG,
-                    foreground=FG,
-                    rowheight=42,
-                    borderwidth=0,
-                    font=("Sans", 10))
-        s.configure("Treeview.Heading",
-                    background=BG_PANEL,
-                    foreground=FG_DIM,
-                    font=("Sans", 8),
-                    borderwidth=0,
-                    relief="flat")
-        s.map("Treeview",
-              background=[("selected", SEL_BG)],
-              foreground=[("selected", ACCENT)])
-        s.layout("Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
-
-        s.configure("Vertical.TScrollbar",
-                    background=BG,
-                    troughcolor=BG,
-                    borderwidth=0,
-                    arrowsize=0)
-        s.map("Vertical.TScrollbar",
-              background=[("active", BORDER)])
 
     # ------------------------------------------------------------------- UI
 
@@ -81,96 +50,180 @@ class App(tk.Tk):
             topbar, text="DeskJots",
             bg=BG_PANEL, fg=ACCENT,
             font=("Sans", 14, "bold"),
-        ).pack(side="left", padx=16, pady=0)
+        ).pack(side="left", padx=16)
 
         tk.Button(
             topbar, text="+",
             bg=BG_PANEL, fg=ACCENT,
             activebackground=BG_PANEL, activeforeground="#fff",
             relief="flat", bd=0,
+            highlightthickness=0,
             font=("Sans", 22, "bold"),
             cursor="hand2",
             command=self._new_note,
         ).pack(side="right", padx=16)
 
-        # thin separator
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
-        # ── Note list ──────────────────────────────────────────────────
-        list_frame = tk.Frame(self, bg=BG)
-        list_frame.pack(fill="both", expand=True)
+        # ── Scrollable tile area ────────────────────────────────────────
+        wrapper = tk.Frame(self, bg=BG)
+        wrapper.pack(fill="both", expand=True)
 
-        self.tree = ttk.Treeview(
-            list_frame,
-            columns=("indicator", "title", "updated"),
-            show="headings",
-            selectmode="browse",
+        self.canvas = tk.Canvas(
+            wrapper, bg=BG,
+            highlightthickness=0, bd=0,
         )
-        self.tree.heading("indicator", text="")
-        self.tree.heading("title",     text="TITLE")
-        self.tree.heading("updated",   text="MODIFIED")
-        self.tree.column("indicator", width=6,   stretch=False, anchor="center")
-        self.tree.column("title",     width=240, stretch=True,  anchor="w")
-        self.tree.column("updated",   width=120, stretch=False, anchor="e")
-
-        sb = ttk.Scrollbar(list_frame, orient="vertical",
-                           command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(
+            wrapper, orient="vertical",
+            command=self.canvas.yview,
+            bg=BG, troughcolor=BG,
+            activebackground=BORDER,
+            width=6, relief="flat", bd=0,
+        )
+        self.canvas.configure(yscrollcommand=sb.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        self.tree.bind("<Double-1>", self._open_selected)
-        self.tree.bind("<Return>",   self._open_selected)
-        self.tree.bind("<Delete>",   self._delete_selected)
+        self.tile_frame = tk.Frame(self.canvas, bg=BG)
+        self._canvas_window = self.canvas.create_window(
+            (0, 0), window=self.tile_frame, anchor="nw"
+        )
 
-        # ── Bottom bar ─────────────────────────────────────────────────
+        self.tile_frame.bind("<Configure>", self._on_tile_frame_resize)
+        self.canvas.bind("<Configure>",     self._on_canvas_resize)
+        self.canvas.bind("<MouseWheel>",    self._on_mousewheel)
+        self.canvas.bind("<Button-4>",      self._on_mousewheel)
+        self.canvas.bind("<Button-5>",      self._on_mousewheel)
+
+        # ── Status bar ─────────────────────────────────────────────────
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
-        bottombar = tk.Frame(self, bg=BG_PANEL, height=34)
-        bottombar.pack(fill="x", side="bottom")
-        bottombar.pack_propagate(False)
+        statusbar = tk.Frame(self, bg=BG_PANEL, height=30)
+        statusbar.pack(fill="x", side="bottom")
+        statusbar.pack_propagate(False)
 
         self.status_var = tk.StringVar()
         tk.Label(
-            bottombar, textvariable=self.status_var,
+            statusbar, textvariable=self.status_var,
             bg=BG_PANEL, fg=FG_DIM,
             font=("Sans", 8),
-        ).pack(side="left", padx=12, pady=0)
+        ).pack(side="left", padx=12)
 
-        tk.Button(
-            bottombar, text="delete",
-            bg=BG_PANEL, fg=FG_DIM,
-            activebackground=BG_PANEL, activeforeground="#c0392b",
-            relief="flat", bd=0,
-            font=("Sans", 8),
-            cursor="hand2",
-            command=self._delete_selected,
-        ).pack(side="right", padx=12)
-
-    # ----------------------------------------------------------- list logic
+    # --------------------------------------------------------- tile builder
 
     def _refresh_list(self):
-        notes = db.get_all_notes()
-        self.tree.delete(*self.tree.get_children())
-        self._row_ids = {}
+        for tile in self._tiles:
+            tile.destroy()
+        self._tiles.clear()
 
+        notes = db.get_all_notes()
         for note in notes:
-            updated = note["updated_at"][:16].replace("T", "  ")
-            title   = note["title"] or "Untitled"
-            iid = self.tree.insert("", "end",
-                                   values=("", title, updated))
-            # colour the left indicator stripe via tag
-            tag = f"dot_{note['id']}"
-            self.tree.tag_configure(tag, foreground=note["colour"])
-            self.tree.item(iid, tags=(tag,))
-            self._row_ids[iid] = note["id"]
+            self._build_tile(note)
 
         n = len(notes)
         self.status_var.set(f"{n} note{'s' if n != 1 else ''}")
 
-    def _selected_note_id(self):
-        sel = self.tree.selection()
-        return self._row_ids.get(sel[0]) if sel else None
+    def _build_tile(self, note):
+        note_id = note["id"]
+        colour  = note["colour"]
+        title   = note["title"] or "Untitled"
+        preview = note["content"].replace("\n", " ").strip()
+        preview = preview[:60] + "…" if len(preview) > 60 else preview
+        updated = note["updated_at"][:16].replace("T", "  ")
+
+        # ── Tile frame ─────────────────────────────────────────────────
+        tile = tk.Frame(self.tile_frame, bg=BG_TILE, cursor="hand2")
+        tile.pack(fill="x", padx=10, pady=(6, 0))
+        self._tiles.append(tile)
+
+        # Coloured left stripe
+        stripe = tk.Frame(tile, width=4, bg=colour)
+        stripe.pack(side="left", fill="y")
+
+        # Main tile body
+        body = tk.Frame(tile, bg=BG_TILE, padx=10, pady=8)
+        body.pack(side="left", fill="both", expand=True)
+
+        # Top row: title + ✕ button
+        top_row = tk.Frame(body, bg=BG_TILE)
+        top_row.pack(fill="x")
+
+        tk.Label(
+            top_row, text=title,
+            bg=BG_TILE, fg=FG,
+            font=("Sans", 10, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        # ✕ delete button — command handles delete, binding stops propagation
+        delete_btn = tk.Button(
+            top_row, text="✕",
+            bg=BG_TILE, fg=FG_DIM,
+            activebackground=BG_TILE, activeforeground="#ff6b6b",
+            relief="flat", bd=0,
+            highlightthickness=0,
+            font=("Sans", 9),
+            cursor="hand2",
+            command=lambda nid=note_id, t=title: self._delete_note(nid, t),
+        )
+        delete_btn.pack(side="right")
+
+        # Preview text
+        if preview:
+            tk.Label(
+                body, text=preview,
+                bg=BG_TILE, fg=FG_MUTED,
+                font=("Sans", 8),
+                anchor="w", justify="left",
+            ).pack(fill="x", pady=(2, 0))
+
+        # Timestamp
+        tk.Label(
+            body, text=updated,
+            bg=BG_TILE, fg=FG_DIM,
+            font=("Sans", 7),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        # ── Bind open + hover to everything except the delete button ───
+        def _bind_tile(widget):
+            if widget is delete_btn:
+                return
+            widget.bind("<Button-1>",
+                        lambda e, nid=note_id: self._open_note_window(nid))
+            widget.bind("<Enter>",
+                        lambda e, t=tile: t.configure(bg=BG_TILE_HO))
+            widget.bind("<Leave>",
+                        lambda e, t=tile: t.configure(bg=BG_TILE))
+            widget.bind("<MouseWheel>", self._on_mousewheel)
+            widget.bind("<Button-4>",   self._on_mousewheel)
+            widget.bind("<Button-5>",   self._on_mousewheel)
+            for child in widget.winfo_children():
+                _bind_tile(child)
+
+        _bind_tile(tile)
+
+    # -------------------------------------------------------- scroll helpers
+
+    def _on_tile_frame_resize(self, _event):
+        self.canvas.update_idletasks()
+        content_height = self.tile_frame.winfo_reqheight()
+        canvas_height  = self.canvas.winfo_height()
+        if content_height > canvas_height:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        else:
+            self.canvas.configure(scrollregion=(0, 0, 0, 0))
+
+    def _on_canvas_resize(self, event):
+        self.canvas.itemconfig(self._canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        if event.num == 4:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.canvas.yview_scroll(1, "units")
+        else:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     # ---------------------------------------------------------- note actions
 
@@ -178,11 +231,6 @@ class App(tk.Tk):
         note_id = db.create_note()
         self._open_note_window(note_id)
         self._refresh_list()
-
-    def _open_selected(self, _event=None):
-        note_id = self._selected_note_id()
-        if note_id is not None:
-            self._open_note_window(note_id)
 
     def _open_note_window(self, note_id):
         if note_id in self._open_notes:
@@ -197,12 +245,7 @@ class App(tk.Tk):
         self._open_notes.pop(note_id, None)
         self._refresh_list()
 
-    def _delete_selected(self, _event=None):
-        note_id = self._selected_note_id()
-        if note_id is None:
-            return
-        note  = db.get_note(note_id)
-        title = note["title"] if note else "this note"
+    def _delete_note(self, note_id, title):
         if not messagebox.askyesno(
             APP_NAME,
             f'Delete "{title}"?\nThis cannot be undone.',
