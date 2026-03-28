@@ -3,10 +3,20 @@ main.py - DeskJots main window
 Tile-based note list with per-tile delete button.
 """
 
+import sys
+import os
 import tkinter as tk
 from tkinter import messagebox
 import deskjots_db as db
 from note_window import NoteWindow
+
+
+def resource_path(relative_path):
+    """Get absolute path to resource — works for dev and PyInstaller bundle."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(__file__), relative_path)
+
 
 APP_NAME = "DeskJots"
 
@@ -31,6 +41,12 @@ class App(tk.Tk):
         self.geometry("400x540")
         self.minsize(320, 360)
         self.configure(bg=BG)
+
+        try:
+            icon = tk.PhotoImage(file=resource_path("deskjots.png"))
+            self.iconphoto(True, icon)
+        except Exception:
+            pass
 
         self._open_notes: dict[int, NoteWindow] = {}
         self._tiles: list[tk.Frame] = []
@@ -155,7 +171,6 @@ class App(tk.Tk):
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
 
-        # ✕ delete button — command handles delete, binding stops propagation
         delete_btn = tk.Button(
             top_row, text="✕",
             bg=BG_TILE, fg=FG_DIM,
@@ -205,17 +220,21 @@ class App(tk.Tk):
 
     # -------------------------------------------------------- scroll helpers
 
-    def _on_tile_frame_resize(self, _event):
-        self.canvas.update_idletasks()
-        content_height = self.tile_frame.winfo_reqheight()
-        canvas_height  = self.canvas.winfo_height()
-        if content_height > canvas_height:
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        else:
-            self.canvas.configure(scrollregion=(0, 0, 0, 0))
+    def _on_tile_frame_resize(self, _event=None):
+        self.after(10, self._apply_scrollregion)
 
     def _on_canvas_resize(self, event):
         self.canvas.itemconfig(self._canvas_window, width=event.width)
+        self.after(10, self._apply_scrollregion)
+
+    def _apply_scrollregion(self):
+        content_height = self.tile_frame.winfo_reqheight()
+        canvas_height  = self.canvas.winfo_height()
+        if content_height > canvas_height:
+            self.canvas.configure(scrollregion=(0, 0, 0, content_height))
+        else:
+            self.canvas.configure(scrollregion=(0, 0, 0, canvas_height))
+            self.canvas.yview_moveto(0)
 
     def _on_mousewheel(self, event):
         if event.num == 4:
